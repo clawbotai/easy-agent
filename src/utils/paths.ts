@@ -23,6 +23,7 @@
  *     ├── settings.json         ← user-scope settings (perms, mcpServers, ...)
  *     ├── AGENT.md              ← user-scope memory loaded into system prompt
  *     ├── tasks/                ← Task V2 persisted task graphs (per session)
+ *     ├── runs/                 ← Web collaboration runs
  *     ├── plans/                ← Plan-mode plan files
  *     ├── projects/             ← per-cwd memory + session JSONL transcripts
  *     └── stream-debug.log      ← opt-in raw SSE log
@@ -73,6 +74,11 @@ export function getGlobalAgentMdPath(): string {
 /** Returns `~/.easy-agent/tasks`. */
 export function getTasksRoot(): string {
   return getEasyAgentPath("tasks");
+}
+
+/** Returns `~/.easy-agent/runs`. */
+export function getRunsRoot(): string {
+  return getEasyAgentPath("runs");
 }
 
 /** Returns `~/.easy-agent/plans`. */

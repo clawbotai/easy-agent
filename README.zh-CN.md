@@ -162,6 +162,44 @@ npm install
 npm run dev
 ```
 
+### Web 协作控制台
+
+启动本地网页 UI：
+
+```bash
+npm run web
+```
+
+默认地址：
+
+```text
+http://127.0.0.1:4318
+```
+
+Web 控制台用于编排 Claude Code 与 Codex CLI 协作完成代码任务。当前支持两种流程：
+
+- Claude Code 规划 → 用户审批 → Codex 执行 → Claude Code 审查
+- Claude Code 执行 → Codex 审查 → Claude Code 修正
+
+运行数据保存在 `~/.easy-agent/runs/`。Agent 命令可在 `~/.easy-agent/settings.json` 或项目 `.easy-agent/settings.json` 中覆盖：
+
+```json
+{
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "args": ["-p", "--output-format", "text"],
+      "timeoutMs": 1200000
+    },
+    "codex": {
+      "command": "codex",
+      "args": ["exec", "--json", "--skip-git-repo-check"],
+      "timeoutMs": 1200000
+    }
+  }
+}
+```
+
 ### 构建运行
 
 ```bash
