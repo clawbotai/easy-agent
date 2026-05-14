@@ -29,14 +29,35 @@ export default function Sidebar() {
     }
   }, [setRuns]);
 
+  // 初始化：获取默认工作区并加载数据
   useEffect(() => {
-    refreshAgents();
-    refreshRuns();
+    const init = async () => {
+      // 如果 workspace 为空，先获取默认值
+      if (!workspace) {
+        try {
+          const configRes = await fetch('/api/config');
+          const config = await configRes.json();
+          if (config.workspace) {
+            setWorkspace(config.workspace);
+            // workspace 更新后会触发 refreshAgents
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to fetch config:', error);
+        }
+      }
+
+      // 加载数据
+      refreshAgents();
+      refreshRuns();
+    };
+
+    init();
 
     const handleRefresh = () => refreshRuns();
     window.addEventListener('refresh-runs', handleRefresh);
     return () => window.removeEventListener('refresh-runs', handleRefresh);
-  }, [refreshAgents, refreshRuns]);
+  }, [workspace, refreshAgents, refreshRuns, setWorkspace]);
 
   const loadRun = async (id: string) => {
     try {
