@@ -206,9 +206,33 @@ export class CollaborationCoordinator {
     this.adapters = adapters;
   }
 
+  /**
+   * 服务启动时恢复非终态的历史 run。
+   * 当 Codex/Claude 子进程被中断或服务异常退出时，run 可能停留在非终态。
+   * 此方法在服务启动时调用，将这些 run 标记为"已中断/失败"。
+   */
+  async recoverStaleRuns(): Promise<AgentRun[]> {
+    const persisted = await listRuns();
+    const recovered: AgentRun[] = [];
+
+    for (const run of persisted) {
+      if (!isTerminalRun(run) && !this.activeRuns.has(run.id)) {
+        const recoveredRun = await this.markInactiveRun(run);
+        recovered.push(recoveredRun);
+      }
+    }
+
+    if (recovered.length > 0) {
+      console.log(`[Easy Agent] 已恢复 ${recovered.length} 个中断的历史运行记录`);
+    }
+
+    return recovered;
+  }
+
   async listRuns(): Promise<AgentRun[]> {
     const persisted = await listRuns();
-    return await Promise.all(persisted.map((run) => this.hydrateRun(run)));
+    const runs = await Promise.all(persisted.map((run) => this.hydrateRun(run)));
+    return runs;
   }
 
   async getRun(runId: string): Promise<AgentRun | null> {

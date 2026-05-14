@@ -177,8 +177,15 @@ const server = http.createServer((req, res) => {
   })();
 });
 
-server.listen(getPort(process.argv), "127.0.0.1", () => {
+server.listen(getPort(process.argv), "127.0.0.1", async () => {
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : DEFAULT_PORT;
   console.log(`Easy Agent Web UI: http://127.0.0.1:${port}`);
+
+  // 服务启动时恢复中断的历史运行记录
+  try {
+    await coordinator.recoverStaleRuns();
+  } catch (error) {
+    console.error("[Easy Agent] 恢复历史运行记录失败:", error);
+  }
 });
