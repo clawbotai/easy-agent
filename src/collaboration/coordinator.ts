@@ -6,6 +6,7 @@ import {
   buildClaudeExecutionPrompt,
   buildClaudePlanPrompt,
   buildClaudeReviewPrompt,
+  buildCodexDirectExecutionPrompt,
   buildCodexExecutionPrompt,
   buildCodexReviewPrompt,
   buildReworkPrompt,
@@ -26,6 +27,7 @@ import type {
   AgentRun,
   AgentRunResult,
   AgentStep,
+  ContinueRunRequest,
   CreateRunRequest,
   PendingApproval,
   RunEvent,
@@ -47,7 +49,9 @@ function now(): string {
 function validateWorkflow(value: string): CreateRunRequest["workflow"] {
   if (
     value === "claude_plan_codex_execute_claude_review" ||
-    value === "claude_execute_codex_review"
+    value === "claude_execute_codex_review" ||
+    value === "claude_direct_execute" ||
+    value === "codex_direct_execute"
   ) {
     return value;
   }
@@ -57,6 +61,138 @@ function validateWorkflow(value: string): CreateRunRequest["workflow"] {
 function extractMentionedFiles(output: string): string[] {
   const matches = output.match(/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+/g) ?? [];
   return [...new Set(matches)].slice(0, 50);
+}
+
+function compactOutput(output: string | undefined, maxChars = 7000): string {
+  const normalized = (output ?? "").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}\n\n[内容过长，已截断 ${normalized.length - maxChars} 个字符]`;
+}
+
+function buildCompletedResult(run: AgentRun, completionMessage: string): string {
+  const latestExecution = [...run.steps]
+    .reverse()
+    .find((step) => step.status === "completed" && (step.phase === "execute" || step.phase === "rework"));
+  const latestReview = [...run.steps]
+    .reverse()
+    .find((step) => step.status === "completed" && step.phase === "review");
+  const touchedFiles = [...new Set(run.steps.flatMap((step) => step.files ?? []))];
+  const taskLines = run.activeInstruction
+    ? [`任务：${run.activeInstruction}`, `所属任务：${run.task}`]
+    : [`任务：${run.task}`];
+
+  return [
+    `结论：${completionMessage}`,
+    "",
+    ...taskLines,
+    touchedFiles.length > 0 ? `涉及文件：${touchedFiles.join(", ")}` : "涉及文件：未从输出中识别到文件路径",
+    "",
+    "执行结果：",
+    compactOutput(latestExecution?.output) || "执行方没有返回详细结果。",
+    "",
+    "审查结果：",
+    compactOutput(latestReview?.output) || "该流程没有进入交叉审查。",
+  ].join("\n");
+}
+
+function buildCancelledResult(run: AgentRun, reason: string): string {
+  return [
+    "结论：协作任务已取消。",
+    "",
+    `任务：${run.task}`,
+    "",
+    "取消原因：",
+    reason,
+  ].join("\n");
+}
+
+function buildFailedResult(run: AgentRun, error: string): string {
+  return [
+    "结论：协作任务失败。",
+    "",
+    `任务：${run.task}`,
+    "",
+    "失败原因：",
+    error,
+  ].join("\n");
+}
+
+function getCompletedMessage(run: AgentRun): string {
+  const completionEvent = [...run.events]
+    .reverse()
+    .find((event) => {
+      const data = event.data as { status?: string } | undefined;
+      return event.type === "status_changed" && data?.status === "completed";
+    });
+  return completionEvent?.message ?? "协作任务完成。";
+}
+
+function buildTerminalResult(run: AgentRun): string | undefined {
+  if (run.status === "completed") return buildCompletedResult(run, getCompletedMessage(run));
+  if (run.status === "failed") return buildFailedResult(run, run.error ?? "未知错误");
+  if (run.status === "cancelled") return buildCancelledResult(run, "运行已取消。");
+  return undefined;
+}
+
+function ensureFinalResult(run: AgentRun): AgentRun {
+  if (!run.finalResult) {
+    run.finalResult = buildTerminalResult(run);
+  }
+  return run;
+}
+
+function isTerminalRun(run: AgentRun): boolean {
+  return TERMINAL_STATUSES.has(run.status);
+}
+
+function describeInactiveRun(run: AgentRun): string {
+  const lastEvent = run.events.at(-1);
+  const runningStep = [...run.steps].reverse().find((step) => step.status === "running");
+  if (lastEvent?.type === "approval_resolved") {
+    return "运行记录已经收到用户审批，但当前 Web 服务没有对应的审批等待器继续推进。通常是服务重启或进程中断导致。";
+  }
+  if (runningStep) {
+    return `${runningStep.actor} 的 ${runningStep.phase} 步骤处于运行中，但当前 Web 服务没有对应的活动进程。通常是 Agent 子进程被中断或服务重启导致。`;
+  }
+  if (run.pendingApproval || run.status.includes("awaiting")) {
+    return "运行记录处于等待审批状态，但当前 Web 服务没有对应的审批等待器。通常是服务重启导致。";
+  }
+  return "运行记录处于非终态，但当前 Web 服务没有对应的活动任务。通常是服务重启或执行进程中断导致。";
+}
+
+function buildRunContext(run: AgentRun): string {
+  const previousContinuations = (run.continuations ?? []).slice(0, -1);
+  const continuationLines = previousContinuations.map((item, index) => (
+    `${index + 1}. ${item.task}（${item.workflow}）`
+  ));
+  const stepLines = run.steps.slice(-8).map((step, index) => {
+    const output = compactOutput(step.output || step.error, 1200) || "无输出";
+    return [
+      `${index + 1}. ${step.actor} / ${step.phase} / ${step.status}`,
+      output,
+    ].join("\n");
+  });
+
+  return [
+    `原始任务：${run.task}`,
+    continuationLines.length ? `此前追加指令：\n${continuationLines.join("\n")}` : "",
+    stepLines.length ? `已有步骤摘要：\n${stepLines.join("\n\n")}` : "",
+    run.finalResult ? `上一次 MOSS 结果：\n${compactOutput(run.finalResult, 1800)}` : "",
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildPromptInput(
+  run: AgentRun,
+  extra: { previousOutput?: string; reviewOutput?: string } = {},
+): { task: string; workspace: string; workflow: AgentRun["workflow"]; context?: string; previousOutput?: string; reviewOutput?: string } {
+  const isContinuation = Boolean(run.activeInstruction);
+  return {
+    task: run.activeInstruction ?? run.task,
+    workspace: run.workspace,
+    workflow: run.workflow,
+    ...(isContinuation ? { context: buildRunContext(run) } : {}),
+    ...extra,
+  };
 }
 
 export class CollaborationCoordinator {
@@ -72,11 +208,12 @@ export class CollaborationCoordinator {
 
   async listRuns(): Promise<AgentRun[]> {
     const persisted = await listRuns();
-    return persisted.map((run) => this.activeRuns.get(run.id) ?? run);
+    return await Promise.all(persisted.map((run) => this.hydrateRun(run)));
   }
 
   async getRun(runId: string): Promise<AgentRun | null> {
-    return this.activeRuns.get(runId) ?? await loadRun(runId);
+    const run = this.activeRuns.get(runId) ?? await loadRun(runId);
+    return run ? await this.hydrateRun(run) : null;
   }
 
   async getAgentAvailability(cwd: string): Promise<AgentAvailability[]> {
@@ -134,6 +271,48 @@ export class CollaborationCoordinator {
     return run;
   }
 
+  async continueRun(runId: string, request: ContinueRunRequest): Promise<AgentRun> {
+    if (!request.task.trim()) {
+      throw new Error("Task is required");
+    }
+    if (request.mode !== "code") {
+      throw new Error(`Unsupported mode: ${request.mode}`);
+    }
+
+    const run = await this.requireRun(runId);
+    if (this.activeRuns.has(run.id) && !isTerminalRun(run)) {
+      throw new Error("当前任务仍在运行或等待审批，请先完成、取消或刷新状态后再继续。");
+    }
+
+    const createdAt = now();
+    const continuation = {
+      id: crypto.randomUUID(),
+      task: request.task.trim(),
+      workflow: validateWorkflow(request.workflow),
+      createdAt,
+    };
+
+    run.workflow = continuation.workflow;
+    run.status = "created";
+    run.currentActor = "system";
+    run.activeInstruction = continuation.task;
+    run.continuations = [...(run.continuations ?? []), continuation];
+    delete run.pendingApproval;
+    delete run.error;
+    delete run.finalResult;
+
+    this.activeRuns.set(run.id, run);
+    await this.recordEvent(
+      run,
+      "run_continued",
+      "user",
+      `用户继续当前任务：${continuation.task}`,
+      { continuationId: continuation.id, workflow: continuation.workflow },
+    );
+    void this.runWorkflow(run.id);
+    return run;
+  }
+
   async approve(runId: string, approved: boolean, note?: string): Promise<AgentRun> {
     const run = await this.requireRun(runId);
     if (!run.pendingApproval) {
@@ -178,8 +357,10 @@ export class CollaborationCoordinator {
 
     run.status = "cancelled";
     run.currentActor = "system";
+    run.finalResult = buildCancelledResult(run, reason);
     delete run.pendingApproval;
     await this.recordEvent(run, "cancelled", "system", reason);
+    await this.recordFinalResult(run);
     this.activeRuns.delete(run.id);
     return run;
   }
@@ -189,6 +370,42 @@ export class CollaborationCoordinator {
     if (!run) {
       throw new Error(`Run not found: ${runId}`);
     }
+    return run;
+  }
+
+  private async hydrateRun(run: AgentRun): Promise<AgentRun> {
+    const active = this.activeRuns.get(run.id);
+    if (active) return ensureFinalResult(active);
+    if (!isTerminalRun(run)) {
+      return await this.markInactiveRun(run);
+    }
+    return ensureFinalResult(run);
+  }
+
+  private async markInactiveRun(run: AgentRun): Promise<AgentRun> {
+    const previousStatus = run.status;
+    const reason = describeInactiveRun(run);
+    const endedAt = now();
+
+    for (const step of run.steps) {
+      if (step.status === "running") {
+        step.status = "failed";
+        step.error = reason;
+        step.endedAt = endedAt;
+      }
+    }
+
+    run.status = "failed";
+    run.currentActor = "system";
+    run.error = reason;
+    run.finalResult = buildFailedResult(run, reason);
+    delete run.pendingApproval;
+
+    await this.recordEvent(run, "error", "system", reason, {
+      recovered: true,
+      previousStatus,
+    });
+    await this.recordFinalResult(run);
     return run;
   }
 
@@ -202,15 +419,21 @@ export class CollaborationCoordinator {
       releaseLock = acquireWorkspaceLock(run.workspace, run.id);
       if (run.workflow === "claude_plan_codex_execute_claude_review") {
         await this.runPlanExecuteReview(run, abortController.signal);
-      } else {
+      } else if (run.workflow === "claude_execute_codex_review") {
         await this.runExecuteReview(run, abortController.signal);
+      } else if (run.workflow === "claude_direct_execute") {
+        await this.runDirectExecute(run, "claude", abortController.signal);
+      } else {
+        await this.runDirectExecute(run, "codex", abortController.signal);
       }
     } catch (error: unknown) {
       if (run.status !== "cancelled") {
         run.status = "failed";
         run.currentActor = "system";
         run.error = error instanceof Error ? error.message : String(error);
+        run.finalResult = buildFailedResult(run, run.error);
         await this.recordEvent(run, "error", "system", run.error);
+        await this.recordFinalResult(run);
       }
     } finally {
       releaseLock?.();
@@ -224,7 +447,14 @@ export class CollaborationCoordinator {
 
   private async runPlanExecuteReview(run: AgentRun, abortSignal: AbortSignal): Promise<void> {
     await this.setStatus(run, "planning", "claude", "Claude Code 正在只读分析并制定计划。");
-    const plan = await this.runAgentStep(run, "claude", "plan", buildClaudePlanPrompt(run), "read-only", abortSignal);
+    const plan = await this.runAgentStep(
+      run,
+      "claude",
+      "plan",
+      buildClaudePlanPrompt(buildPromptInput(run)),
+      "read-only",
+      abortSignal,
+    );
 
     const planApproval = await this.waitForApproval(
       run,
@@ -239,7 +469,7 @@ export class CollaborationCoordinator {
       run,
       "codex",
       "execute",
-      buildCodexExecutionPrompt({ ...run, previousOutput: plan.result.output }),
+      buildCodexExecutionPrompt(buildPromptInput(run, { previousOutput: plan.result.output })),
       "workspace-write",
       abortSignal,
     );
@@ -250,7 +480,7 @@ export class CollaborationCoordinator {
         run,
         "claude",
         "review",
-        buildClaudeReviewPrompt({ ...run, previousOutput: execution.result.output }),
+        buildClaudeReviewPrompt(buildPromptInput(run, { previousOutput: execution.result.output })),
         "read-only",
         abortSignal,
       );
@@ -277,11 +507,10 @@ export class CollaborationCoordinator {
         run,
         "codex",
         "rework",
-        buildReworkPrompt({
-          ...run,
+        buildReworkPrompt(buildPromptInput(run, {
           previousOutput: execution.result.output,
           reviewOutput: review.result.output,
-        }),
+        })),
         "workspace-write",
         abortSignal,
       );
@@ -301,7 +530,7 @@ export class CollaborationCoordinator {
       run,
       "claude",
       "execute",
-      buildClaudeExecutionPrompt(run),
+      buildClaudeExecutionPrompt(buildPromptInput(run)),
       "workspace-write",
       abortSignal,
     );
@@ -312,7 +541,7 @@ export class CollaborationCoordinator {
         run,
         "codex",
         "review",
-        buildCodexReviewPrompt({ ...run, previousOutput: execution.result.output }),
+        buildCodexReviewPrompt(buildPromptInput(run, { previousOutput: execution.result.output })),
         "read-only",
         abortSignal,
       );
@@ -339,15 +568,34 @@ export class CollaborationCoordinator {
         run,
         "claude",
         "rework",
-        buildReworkPrompt({
-          ...run,
+        buildReworkPrompt(buildPromptInput(run, {
           previousOutput: execution.result.output,
           reviewOutput: review.result.output,
-        }),
+        })),
         "workspace-write",
         abortSignal,
       );
     }
+  }
+
+  private async runDirectExecute(
+    run: AgentRun,
+    actor: AgentRole,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
+    const actorName = actor === "claude" ? "Claude Code" : "Codex";
+    await this.setStatus(run, "executing", actor, `${actorName} 正在直接执行代码任务。`);
+    await this.runAgentStep(
+      run,
+      actor,
+      "execute",
+      actor === "claude"
+        ? buildClaudeExecutionPrompt(buildPromptInput(run))
+        : buildCodexDirectExecutionPrompt(buildPromptInput(run)),
+      "workspace-write",
+      abortSignal,
+    );
+    await this.completeRun(run, `${actorName} 已完成直接执行，协作任务完成。`);
   }
 
   private async runAgentStep(
@@ -459,8 +707,15 @@ export class CollaborationCoordinator {
   private async completeRun(run: AgentRun, message: string): Promise<void> {
     run.status = "completed";
     run.currentActor = "system";
+    run.finalResult = buildCompletedResult(run, message);
     delete run.pendingApproval;
     await this.recordEvent(run, "status_changed", "system", message, { status: "completed" });
+    await this.recordFinalResult(run);
+  }
+
+  private async recordFinalResult(run: AgentRun): Promise<void> {
+    if (!run.finalResult) return;
+    await this.recordEvent(run, "final_result", "system", run.finalResult, { status: run.status });
   }
 
   private async recordEvent(

@@ -3,6 +3,7 @@ import type { Workflow } from "./types.js";
 interface PromptInput {
   task: string;
   workspace: string;
+  context?: string;
   previousOutput?: string;
   reviewOutput?: string;
   workflow?: Workflow;
@@ -13,6 +14,7 @@ function baseHeader(input: PromptInput): string {
     "你正在 Easy Agent 的多智能体协作流程中工作。",
     `工作区：${input.workspace}`,
     `用户任务：${input.task}`,
+    ...(input.context ? ["", "当前任务上下文：", input.context] : []),
     "",
     "必须使用中文输出。",
     "输出要结构化、可交接、可审查。",
@@ -48,6 +50,23 @@ export function buildCodexExecutionPrompt(input: PromptInput): string {
     "",
     "Claude Code 计划如下：",
     input.previousOutput ?? "(无计划内容)",
+    "",
+    "完成后请输出以下固定结构：",
+    "EXECUTION_RESULT: completed",
+    "已完成内容：",
+    "修改文件：",
+    "测试结果：",
+    "未完成事项：",
+    "需要审查的问题：",
+  ].join("\n");
+}
+
+export function buildCodexDirectExecutionPrompt(input: PromptInput): string {
+  return [
+    baseHeader(input),
+    "",
+    "你的角色：Codex，负责直接执行代码任务。",
+    "你可以修改工作区文件，但不要提交 git，不要 push，不要修改全局配置。",
     "",
     "完成后请输出以下固定结构：",
     "EXECUTION_RESULT: completed",

@@ -162,7 +162,7 @@ npm install
 npm run dev
 ```
 
-### Web 协作控制台
+### MOSS Web 协作控制台
 
 启动本地网页 UI：
 
@@ -176,10 +176,18 @@ npm run web
 http://127.0.0.1:4318
 ```
 
-Web 控制台用于编排 Claude Code 与 Codex CLI 协作完成代码任务。当前支持两种流程：
+MOSS 控制台用于编排 Claude Code 与 Codex CLI 协作完成代码任务。当前支持两种流程：
 
 - Claude Code 规划 → 用户审批 → Codex 执行 → Claude Code 审查
 - Claude Code 执行 → Codex 审查 → Claude Code 修正
+- Claude Code 直接执行
+- Codex 直接执行
+
+选择“直接执行”时，MOSS 会跳过计划、审批和交叉审查，直接用对应 Agent 修改当前工作区。
+
+选中一个已有任务后再次输入内容，会作为该任务的追加指令继续执行，MOSS 会把原任务、已有步骤输出和上一次结果作为上下文传给新的工作流。需要从零开始时点击“新任务”。
+
+任务完成、失败或取消时，MOSS 会在对话底部输出一条最终结论，并持久化到运行记录的 `finalResult` 字段。
 
 运行数据保存在 `~/.easy-agent/runs/`。Agent 命令可在 `~/.easy-agent/settings.json` 或项目 `.easy-agent/settings.json` 中覆盖：
 

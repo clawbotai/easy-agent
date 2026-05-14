@@ -2,7 +2,9 @@ export type AgentRole = "claude" | "codex";
 
 export type Workflow =
   | "claude_plan_codex_execute_claude_review"
-  | "claude_execute_codex_review";
+  | "claude_execute_codex_review"
+  | "claude_direct_execute"
+  | "codex_direct_execute";
 
 export type RunMode = "code";
 
@@ -29,17 +31,25 @@ export type StepStatus = "pending" | "running" | "completed" | "failed";
 
 export type RunEventType =
   | "run_created"
+  | "run_continued"
   | "status_changed"
   | "step_started"
   | "step_completed"
   | "approval_required"
   | "approval_resolved"
   | "agent_log"
+  | "final_result"
   | "error"
   | "cancelled";
 
 export interface CreateRunRequest {
   workspace: string;
+  task: string;
+  workflow: Workflow;
+  mode: RunMode;
+}
+
+export interface ContinueRunRequest {
   task: string;
   workflow: Workflow;
   mode: RunMode;
@@ -83,6 +93,13 @@ export interface RunEvent {
   data?: unknown;
 }
 
+export interface RunContinuation {
+  id: string;
+  task: string;
+  workflow: Workflow;
+  createdAt: string;
+}
+
 export interface AgentRun {
   id: string;
   workspace: string;
@@ -95,7 +112,10 @@ export interface AgentRun {
   updatedAt: string;
   steps: AgentStep[];
   events: RunEvent[];
+  continuations?: RunContinuation[];
+  activeInstruction?: string;
   pendingApproval?: PendingApproval;
+  finalResult?: string;
   error?: string;
 }
 

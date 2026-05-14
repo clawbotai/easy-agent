@@ -5,7 +5,7 @@ loadEnv();
 import * as http from "node:http";
 import { URL } from "node:url";
 import { CollaborationCoordinator } from "../collaboration/coordinator.js";
-import type { CreateRunRequest } from "../collaboration/types.js";
+import type { ContinueRunRequest, CreateRunRequest } from "../collaboration/types.js";
 import { renderClientHtml } from "./clientHtml.js";
 
 const DEFAULT_PORT = 4318;
@@ -130,6 +130,13 @@ async function routeApi(
       body.approved === true,
       typeof body.note === "string" ? body.note : undefined,
     );
+    sendJson(res, { body: { run } });
+    return true;
+  }
+
+  if (req.method === "POST" && runRoute.action === "continue") {
+    const body = await readJsonBody<ContinueRunRequest>(req);
+    const run = await coordinator.continueRun(runRoute.runId, body);
     sendJson(res, { body: { run } });
     return true;
   }
